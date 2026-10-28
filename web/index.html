@@ -29,7 +29,9 @@
       body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; max-width: 640px; margin-inline: auto; }
       header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
       select, input, button { font: inherit; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
-      select { flex: 1; min-width: 0; }
+      /* 下拉選單的選項清單由瀏覽器繪製：select 背景透明時清單用淺色底，卻沿用深色模式的淺色字，所以兩者都要明確指定。 */
+      select { flex: 1; min-width: 0; background: var(--bg); }
+      option { background: var(--bg); color: var(--fg); }
       .status { padding: 4px 10px; border-radius: 999px; font-size: 0.85em; }
       .status.ok { background: var(--ok-bg); color: var(--ok-fg); }
       .status.delayed { background: var(--warn-bg); color: var(--warn-fg); }
