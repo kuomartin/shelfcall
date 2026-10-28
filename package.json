@@ -1,0 +1,33 @@
+{
+  "name": "shelfcall",
+  "version": "0.0.0",
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "typecheck": "tsc",
+    "test": "node --test \"core/**/*.test.ts\" \"web/**/*.test.ts\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kuomartin/shelfcall.git"
+  },
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/kuomartin/shelfcall/issues"
+  },
+  "homepage": "https://github.com/kuomartin/shelfcall#readme",
+  "devDependencies": {
+    "@google/clasp": "^3.4.1",
+    "@types/google-apps-script": "^2.0.13",
+    "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "zxing-wasm": "^3.1.3"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "barcode-detector": "^3.2.2"
+  }
+}
