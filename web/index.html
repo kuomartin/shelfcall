@@ -54,15 +54,30 @@
       li.here span, li.undone span { color: var(--muted); }
       li.unknown span, li.refused span { color: var(--err-fg); }
       li button { padding: 4px 10px; font-size: 0.85em; }
+      .modes { display: flex; gap: 8px; margin-top: 12px; }
+      .modes button { flex: 1; }
+      .modes button[aria-pressed="true"], .children button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button:disabled { opacity: 0.4; }
+      .children { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.5em, 1fr)); gap: 6px; margin-top: 8px; }
+      .children p { grid-column: 1 / -1; margin: 0; color: var(--muted); }
+      .target { margin-top: 12px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); font-weight: 600; }
+      .target.lend { font-size: 1.4em; border-color: var(--accent); }
+      .target.missing { color: var(--err-fg); background: var(--err-bg); border-color: transparent; }
     </style>
   </head>
   <body>
     <header>
-      <select id="holder" aria-label="保管人"></select>
+      <select id="cls" aria-label="班級"></select>
       <span id="status" class="status offline">連線中…</span>
       <span id="pending"></span>
       <button type="button" id="theme" aria-label="切換深色模式"></button>
     </header>
+    <div class="modes" role="group" aria-label="模式">
+      <button type="button" id="place-mode" aria-pressed="true">放置／還書</button>
+      <button type="button" id="lend-mode" aria-pressed="false">借閱</button>
+    </div>
+    <div id="children" class="children" hidden></div>
+    <div id="target" class="target"></div>
     <form id="form" autocomplete="off">
       <input id="input" inputmode="text" placeholder="條碼" aria-label="條碼" />
       <button type="button" id="camera" hidden>相機</button>
@@ -72,6 +87,8 @@
     <div id="result" class="result info"></div>
     <h2>最近刷過</h2>
     <ol id="recent"></ol>
+    <h2 id="loans-title" hidden></h2>
+    <ol id="loans" hidden></ol>
     <script type="module" src="main.js"></script>
   </body>
 </html>

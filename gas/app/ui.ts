@@ -1,6 +1,6 @@
 // 試算表內的對話框，以及 Web App 的初始化頁。
 
-import type { BookIssue } from "../../core/books.ts";
+import type { Issue } from "../../core/books.ts";
 
 export const PAGES_URL = "https://kuomartin.github.io/shelfcall/";
 
@@ -37,7 +37,7 @@ export function setupPage(deploymentId: string | null): string {
 export function staffLinkDialog(deploymentId: string): string {
   const url = staffUrl(deploymentId);
   return `${STYLE}
-<p>把這個連結或 QR code 交給老師。知道連結的人就能移書。</p>
+<p>把這個連結或 QR code 交給老師。知道連結的人就能刷書，也看得到幼兒名單。</p>
 <p><a href="${escape(url)}" target="_blank"><code>${escape(url)}</code></a></p>
 <div id="qr"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
@@ -45,37 +45,37 @@ export function staffLinkDialog(deploymentId: string): string {
 }
 
 export const SETTINGS_DIALOG = `${STYLE}
-<label>保管人（用逗號分隔；「學校」一定會在清單裡）</label>
-<textarea id="holders" rows="4"></textarea>
+<label>班級（用逗號分隔；「學校」一定會在清單裡，「借出中」不能當班級名稱）</label>
+<textarea id="classes" rows="4"></textarea>
 <button id="save">儲存</button>
 <p id="msg"></p>
 <script>
   const $ = (id) => document.getElementById(id);
-  google.script.run.withSuccessHandler((h) => { $("holders").value = h.join(", "); }).loadHolders();
+  google.script.run.withSuccessHandler((h) => { $("classes").value = h.join(", "); }).loadClasses();
   $("save").addEventListener("click", () => {
     $("msg").textContent = "儲存中…";
     $("msg").className = "";
     google.script.run
       .withSuccessHandler((h) => {
-        $("holders").value = h.join(", ");
+        $("classes").value = h.join(", ");
         $("msg").textContent = "已儲存。開著的掃描頁會在下次同步時更新清單。";
         $("msg").className = "ok";
       })
       .withFailureHandler((e) => { $("msg").textContent = e.message; $("msg").className = "error"; })
-      .storeHolders($("holders").value);
+      .storeClasses($("classes").value);
   });
 </script>`;
 
 const ISSUE_LIMIT = 500;
 
-export function checkDialog(issues: BookIssue[]): string {
+export function checkDialog(issues: Issue[]): string {
   if (!issues.length) return `${STYLE}<p class="ok">沒有發現問題。</p>`;
   const rows = issues
     .slice(0, ISSUE_LIMIT)
-    .map((i) => `<tr><td>${i.row}</td><td>${escape(i.code)}</td><td>${escape(i.title)}</td><td>${escape(i.problem)}</td></tr>`)
+    .map((i) => `<tr><td>${escape(i.sheet)}</td><td>${i.row}</td><td>${escape(i.label)}</td><td>${escape(i.problem)}</td></tr>`)
     .join("");
   const more = issues.length > ISSUE_LIMIT ? `<p>只列出前 ${ISSUE_LIMIT} 筆，共 ${issues.length} 筆。</p>` : "";
   return `${STYLE}
 <p>共 ${issues.length} 個問題。修正後再執行一次確認。</p>${more}
-<table><tr><th>列</th><th>主條碼</th><th>書名</th><th>問題</th></tr>${rows}</table>`;
+<table><tr><th>分頁</th><th>列</th><th>內容</th><th>問題</th></tr>${rows}</table>`;
 }

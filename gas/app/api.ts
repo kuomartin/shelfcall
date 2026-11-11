@@ -1,19 +1,20 @@
 // doPost 的動作：bootstrap、sync。
 
-import type { ApiRequest, BootstrapResult, SyncResult } from "../../core/api.ts";
-import { buildCatalog } from "../../core/books.ts";
+import { unknownTargets, type ApiRequest, type BootstrapResult, type SyncResult } from "../../core/api.ts";
+import { buildCatalog, buildRoster } from "../../core/books.ts";
 import { applySync, type SyncRequest, type SyncResponse } from "../../core/sync.ts";
-import { catalogVersion, getHolders } from "./settings.ts";
-import { readBooks } from "./sheets.ts";
-import { catalogSeq, DeferredHolderStore, LockedLogStore, writeHolders, writeReservation } from "./store.ts";
+import { catalogVersion, getClasses } from "./settings.ts";
+import { readBooks, readRoster } from "./sheets.ts";
+import { catalogSeq, DeferredBookStore, LockedStore, writeLoans, writeReservation, writeStates } from "./store.ts";
 
 const LOCK_WAIT_MS = 20_000;
 
-/** seq 要在讀 Books 之前取得：之後才記帳的移交，掃描頁會自己套上去。 */
+/** seq 要在讀 Books 之前取得：之後才記帳的異動，掃描頁會自己套上去。 */
 function bootstrap(): BootstrapResult {
   const seq = catalogSeq();
   const version = catalogVersion();
-  return { holders: getHolders(), catalog: buildCatalog(readBooks(), version, seq) };
+  const classes = getClasses();
+  return { classes, roster: buildRoster(readRoster(), classes), catalog: buildCatalog(readBooks(), version, seq) };
 }
 
 /** 只在 --dev 建置記錄各段耗時，隨回應帶回。 */
@@ -33,19 +34,22 @@ function timer(): { mark(label: string): void; result(): Record<string, number> 
 
 function sync(req: SyncRequest): SyncResult {
   const t = timer();
-  const holders = getHolders();
-  const unknown = [...new Set(req.transfers.map((x) => x.to))].filter((h) => !holders.includes(h));
-  if (unknown.length) throw new Error(`未知的保管人：${unknown.join("、")}，請重新整理掃描頁`);
+  const classes = getClasses();
+  // 幼兒分頁只在有借閱時才讀。
+  const roster = req.changes.some((c) => c.to.borrower) ? buildRoster(readRoster(), classes) : {};
+  const unknown = unknownTargets(req.changes, classes, roster);
+  if (unknown.length) throw new Error(`不在班級清單或幼兒名單裡：${unknown.join("、")}，請重新整理掃描頁`);
 
-  const deferred = new DeferredHolderStore();
+  const deferred = new DeferredBookStore();
   const lock = LockService.getScriptLock();
   lock.waitLock(LOCK_WAIT_MS);
   t.mark("lockWait");
-  let store: LockedLogStore;
+  let store: LockedStore;
   let res: SyncResponse;
   try {
-    store = new LockedLogStore(req.transfers.map((x) => x.scanId));
-    res = applySync(store, deferred, req);
+    store = new LockedStore(req.changes.map((c) => c.scanId));
+    res = applySync(store, store, deferred, req);
+    store.flush();
   } finally {
     lock.releaseLock();
   }
@@ -54,7 +58,8 @@ function sync(req: SyncRequest): SyncResult {
     const books = readBooks();
     t.mark("readBooks");
     writeReservation(store.reservation, books);
-    writeHolders(deferred.entries, books);
+    writeLoans(store.loanWrites, books);
+    writeStates(deferred.entries, books);
     t.mark("write");
   }
   return { ...res, catalogVersion: catalogVersion(), ...(__DEV__ ? { timings: t.result() } : {}) };

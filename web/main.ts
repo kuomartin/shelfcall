@@ -1,9 +1,10 @@
-// 掃描頁：選定保管人後連續刷書。書目快取本機判定、先回應再背景同步、離線禁止刷書。
+// 掃描頁：選定班級後連續刷書，放置模式把書放到班級（借閱中的書就是還書），借閱模式借給點選的幼兒。
+// 書目快取本機判定、先回應再背景同步、離線禁止刷書。
 
 import type { ApiRequest, ApiResponse, BootstrapResult, SyncResult } from "../core/api.ts";
-import { DEFAULT_HOLDER } from "../core/books.ts";
+import { SCHOOL, type Roster } from "../core/books.ts";
 import { connectivity, Shelf, SyncClient, type Connectivity, type Outcome } from "../core/client.ts";
-import type { Transfer } from "../core/sync.ts";
+import { actionOf, describeState, loan, place, type Change, type State } from "../core/sync.ts";
 import { beep } from "./sound.ts";
 
 const BUSY_INTERVAL_MS = 3_000;
@@ -18,7 +19,11 @@ const endpoint = deployId ? `https://script.google.com/macros/s/${deployId}/exec
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const ui = {
-  holder: $<HTMLSelectElement>("holder"),
+  cls: $<HTMLSelectElement>("cls"),
+  placeMode: $<HTMLButtonElement>("place-mode"),
+  lendMode: $<HTMLButtonElement>("lend-mode"),
+  children: $("children"),
+  target: $("target"),
   status: $("status"),
   pending: $("pending"),
   form: $<HTMLFormElement>("form"),
@@ -27,6 +32,8 @@ const ui = {
   video: $<HTMLVideoElement>("video"),
   result: $("result"),
   recent: $<HTMLOListElement>("recent"),
+  loansTitle: $("loans-title"),
+  loans: $<HTMLOListElement>("loans"),
   theme: $<HTMLButtonElement>("theme"),
 };
 
@@ -81,7 +88,7 @@ async function call<T>(body: ApiRequest): Promise<T> {
   return json.data;
 }
 
-/** 最近刷過的一筆。move 帶著移交，可以復原；undone 表示已經被復原過。 */
+/** 最近刷過的一筆。change 帶著異動，可以復原；undone 表示已經被復原過。 */
 interface Recent {
   at: number;
   outcome: Outcome;
@@ -91,6 +98,11 @@ interface Recent {
 const client = new SyncClient(deviceId());
 const shelf = new Shelf();
 let catalogVersion: string | null = null;
+let roster: Roster = {};
+type Mode = "place" | "lend";
+let mode: Mode = load("mode") === "lend" ? "lend" : "place";
+/** 借閱模式點選的幼兒；換班或重新整理就清掉，免得把書記到上一位名下。 */
+let child: string | null = null;
 const recent: Recent[] = [];
 let lastSuccessAt: number | null = null;
 let lastFailureAt: number | null = null;
@@ -122,14 +134,27 @@ function clock(at: number): string {
 
 function describe(o: Outcome): string {
   switch (o.kind) {
-    case "move":
-      return `${o.title}　${o.transfer.from || "（空白）"} → ${o.transfer.to}`;
+    case "change": {
+      const { from, to } = o.change;
+      switch (actionOf(o.change)) {
+        case "借閱":
+          return `${o.title}　借給 ${describeState(to)}`;
+        case "歸還":
+          return `${o.title}　${describeState(from)} 還書 → ${to.location}`;
+        case "換人借閱":
+          return `${o.title}　${describeState(from)} 還書，借給 ${describeState(to)}`;
+        case "復原":
+          return `${o.title}　復原：${describeState(from)} → ${describeState(to)}`;
+        default:
+          return `${o.title}　${describeState(from)} → ${describeState(to)}`;
+      }
+    }
     case "here":
-      return `${o.title}　已在${o.holder}`;
+      return o.state.borrower ? `${o.title}　${describeState(o.state)} 已借閱` : `${o.title}　已在${o.state.location}`;
     case "unknown":
       return `找不到條碼 ${o.code}`;
-    case "moved-since":
-      return `${o.title}　已被移到${o.holder}，無法復原`;
+    case "changed-since":
+      return `${o.title}　已變成${describeState(o.state)}，無法復原`;
   }
 }
 
@@ -137,12 +162,12 @@ function renderRecent(): void {
   ui.recent.replaceChildren(
     ...recent.map((r) => {
       const li = document.createElement("li");
-      const kind = r.outcome.kind === "moved-since" ? "refused" : r.outcome.kind;
+      const kind = r.outcome.kind === "changed-since" ? "refused" : r.outcome.kind;
       li.className = r.undone ? `${kind} undone` : kind;
       const span = document.createElement("span");
       span.textContent = `${clock(r.at)}　${describe(r.outcome)}${r.undone ? "（已復原）" : ""}`;
       li.append(span);
-      if (r.outcome.kind === "move" && !r.undone) {
+      if (r.outcome.kind === "change" && !r.undone) {
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = "復原";
@@ -154,24 +179,99 @@ function renderRecent(): void {
   );
 }
 
+function shortDate(at: number): string {
+  if (!at) return "";
+  const d = new Date(at);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+/** 本班借閱中的書；選學校時不顯示。 */
+function renderLoans(): void {
+  const cls = ui.cls.value;
+  const show = Boolean(cls) && cls !== SCHOOL;
+  ui.loansTitle.hidden = !show;
+  ui.loans.hidden = !show;
+  if (!show) return;
+  const loans = shelf.openLoans(cls, client.pending());
+  ui.loansTitle.textContent = `${cls}借閱中 ${loans.length} 本`;
+  ui.loans.replaceChildren(
+    ...loans.map((l) => {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.textContent = `${shortDate(l.at) || "—"}　${l.borrower}　${l.title}`;
+      li.append(span);
+      return li;
+    }),
+  );
+}
+
+/** 接下來刷的書會變成什麼狀態；借閱模式還沒點選幼兒時是錯誤訊息。 */
+function target(): State | string {
+  const cls = ui.cls.value;
+  if (mode === "place") return place(cls);
+  if (cls === SCHOOL) return "借閱要先選班級";
+  if (!child) return "先點選借書的小朋友";
+  return loan(cls, child);
+}
+
+function renderTarget(): void {
+  const cls = ui.cls.value;
+  const lendable = cls !== SCHOOL;
+  if (!lendable && mode === "lend") mode = "place";
+  ui.lendMode.disabled = !lendable;
+  ui.placeMode.setAttribute("aria-pressed", String(mode === "place"));
+  ui.lendMode.setAttribute("aria-pressed", String(mode === "lend"));
+  ui.children.hidden = mode !== "lend";
+  const names = roster[cls] ?? [];
+  if (mode === "lend") {
+    if (!names.length) {
+      const p = document.createElement("p");
+      p.textContent = "幼兒分頁沒有這一班的名單，請管理者新增。";
+      ui.children.replaceChildren(p);
+    } else {
+      ui.children.replaceChildren(
+        ...names.map((name) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = name;
+          button.setAttribute("aria-pressed", String(name === child));
+          button.addEventListener("click", () => {
+            child = name;
+            renderTarget();
+            ui.input.focus();
+          });
+          return button;
+        }),
+      );
+    }
+  }
+  const t = target();
+  ui.target.className = typeof t === "string" ? "target missing" : `target ${mode}`;
+  ui.target.textContent = typeof t === "string" ? t : mode === "lend" ? `借給：${child}` : `放到：${cls}（借閱中的書會還書）`;
+}
+
 function render(): void {
   renderStatus();
   renderRecent();
+  renderLoans();
 }
 
 function applyBootstrap(data: BootstrapResult): void {
   shelf.load(data.catalog, client.entries());
   catalogVersion = data.catalog.version;
-  const previous = ui.holder.value || load("holder") || DEFAULT_HOLDER;
-  ui.holder.replaceChildren(...data.holders.map((h) => new Option(h, h)));
-  ui.holder.value = data.holders.includes(previous) ? previous : DEFAULT_HOLDER;
+  roster = data.roster;
+  const previous = ui.cls.value || load("class") || SCHOOL;
+  ui.cls.replaceChildren(...data.classes.map((c) => new Option(c, c)));
+  ui.cls.value = data.classes.includes(previous) ? previous : SCHOOL;
+  if (child && !roster[ui.cls.value]?.includes(child)) child = null;
+  renderTarget();
 }
 
 async function refreshBootstrap(): Promise<void> {
   applyBootstrap(await call<BootstrapResult>({ action: "bootstrap" }));
 }
 
-/** 有待送移交或離線時用短間隔：離線時要盡快恢復，不能等閒置間隔。 */
+/** 有待送異動或離線時用短間隔：離線時要盡快恢復，不能等閒置間隔。 */
 function schedule(delay?: number): void {
   clearTimeout(timer);
   const busy = client.pending().length > 0 || state() === "offline";
@@ -203,11 +303,11 @@ async function syncOnce(): Promise<void> {
 function record(outcome: Outcome, at: number): void {
   recent.unshift({ at, outcome });
   recent.length = Math.min(recent.length, RECENT_LIMIT);
-  const kind = outcome.kind === "move" ? "ok" : outcome.kind === "here" ? "warn" : "error";
+  const kind = outcome.kind === "change" ? "ok" : outcome.kind === "here" ? "warn" : "error";
   showResult(kind, describe(outcome));
-  beep(outcome.kind === "move" ? "move" : outcome.kind === "here" ? "here" : "error");
-  if (outcome.kind === "move") {
-    client.enqueue(outcome.transfer);
+  beep(outcome.kind === "change" ? "move" : outcome.kind === "here" ? "here" : "error");
+  if (outcome.kind === "change") {
+    client.enqueue(outcome.change);
     if (inFlightSince === null) schedule(ENQUEUE_DELAY_MS);
   }
   render();
@@ -228,16 +328,22 @@ function next(): { scanId: string; at: number } {
 function scan(raw: string): void {
   const code = raw.trim();
   if (!code || catalogVersion === null || blockedOffline()) return;
+  const t = target();
+  if (typeof t === "string") {
+    showResult("error", t);
+    beep("error");
+    return;
+  }
   const n = next();
-  record(shelf.scan(code, ui.holder.value, client.pending(), n), n.at);
+  record(shelf.scan(code, t, client.pending(), n), n.at);
 }
 
 function undo(r: Recent): void {
-  if (r.outcome.kind !== "move" || blockedOffline()) return;
-  const original: Transfer = r.outcome.transfer;
+  if (r.outcome.kind !== "change" || blockedOffline()) return;
+  const original: Change = r.outcome.change;
   const n = next();
   const outcome = shelf.undo(original, client.pending(), n);
-  if (outcome.kind === "move") r.undone = true;
+  if (outcome.kind === "change") r.undone = true;
   record(outcome, n.at);
 }
 
@@ -247,11 +353,22 @@ ui.form.addEventListener("submit", (ev) => {
   ui.input.value = "";
   scan(value);
 });
-ui.holder.addEventListener("change", () => {
-  store("holder", ui.holder.value);
-  showResult("info", `接下來刷的書會移到「${ui.holder.value}」。`);
+ui.cls.addEventListener("change", () => {
+  store("class", ui.cls.value);
+  child = null;
+  renderTarget();
+  renderLoans();
   ui.input.focus();
 });
+
+function setMode(next: Mode): void {
+  mode = next;
+  store("mode", mode);
+  renderTarget();
+  ui.input.focus();
+}
+ui.placeMode.addEventListener("click", () => setMode("place"));
+ui.lendMode.addEventListener("click", () => setMode("lend"));
 
 interface Detector {
   detect(source: HTMLVideoElement): Promise<{ rawValue: string }[]>;
@@ -318,7 +435,7 @@ async function main(): Promise<void> {
     showResult("info", "載入書目中…");
     await refreshBootstrap();
     lastSuccessAt = Date.now();
-    showResult("info", `已載入 ${shelf.size} 冊。選好保管人就可以開始刷書。`);
+    showResult("info", `已載入 ${shelf.size} 冊。選好班級就可以開始刷書。`);
   } catch (err) {
     lastFailureAt = Date.now();
     lastError = err instanceof Error ? err.message : String(err);
