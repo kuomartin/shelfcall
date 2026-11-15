@@ -1,11 +1,11 @@
 // Apps Script 進入點。建置時，這裡 export 的函式會成為頂層函式。
 
 import { parseRequest, type ApiResponse } from "../../core/api.ts";
-import { checkBooks, parseHolders } from "../../core/books.ts";
+import { checkBooks, checkRoster, parseClasses } from "../../core/books.ts";
 import { handle } from "./api.ts";
 import { devHandle } from "./dev.ts";
-import { bumpCatalogVersion, deploymentId, getHolders, saveHolders, storeDeploymentId } from "./settings.ts";
-import { BOOKS_SHEET, ensureLogSheet, readBooks } from "./sheets.ts";
+import { bumpCatalogVersion, deploymentId, getClasses, saveClasses, storeDeploymentId } from "./settings.ts";
+import { BOOKS_SHEET, ensureLoanSheet, ensureLogSheet, readBooks, readRoster, ROSTER_SHEET } from "./sheets.ts";
 import { checkDialog, NEED_SETUP, SETTINGS_DIALOG, setupPage, staffLinkDialog } from "./ui.ts";
 
 function json(body: ApiResponse<unknown>): GoogleAppsScript.Content.TextOutput {
@@ -20,6 +20,8 @@ export function doGet(): GoogleAppsScript.HTML.HtmlOutput {
   const match = ScriptApp.getService().getUrl().match(/\/macros\/s\/([^/]+)\/exec/);
   if (match) storeDeploymentId(match[1]);
   ensureLogSheet();
+  ensureLoanSheet();
+  readRoster();
   return HtmlService.createHtmlOutput(setupPage(match ? match[1] : null)).setTitle("書籍保管");
 }
 
@@ -45,9 +47,10 @@ export function onOpen(): void {
     .addToUi();
 }
 
-/** simple trigger：Books 被手動編輯時，讓各裝置重抓書目快取。script 自己的寫入不會觸發。 */
+/** simple trigger：Books 或幼兒分頁被手動編輯時，讓各裝置重抓書目快取與幼兒名單。script 自己的寫入不會觸發。 */
 export function onEdit(e: GoogleAppsScript.Events.SheetsOnEdit): void {
-  if (e.range.getSheet().getName() === BOOKS_SHEET) bumpCatalogVersion();
+  const name = e.range.getSheet().getName();
+  if (name === BOOKS_SHEET || name === ROSTER_SHEET) bumpCatalogVersion();
 }
 
 export function showStaffLink(): void {
@@ -61,17 +64,19 @@ export function showSettings(): void {
   SpreadsheetApp.getUi().showModalDialog(html, "設定");
 }
 
-export function loadHolders(): string[] {
-  return getHolders();
+export function loadClasses(): string[] {
+  return getClasses();
 }
 
-export function storeHolders(text: string): string[] {
-  const holders = parseHolders(text);
-  saveHolders(holders);
-  return holders;
+export function storeClasses(text: string): string[] {
+  const classes = parseClasses(text);
+  saveClasses(classes);
+  return classes;
 }
 
 export function showCheck(): void {
-  const html = HtmlService.createHtmlOutput(checkDialog(checkBooks(readBooks(), getHolders())));
+  const classes = getClasses();
+  const issues = [...checkBooks(readBooks(), classes), ...checkRoster(readRoster(), classes)];
+  const html = HtmlService.createHtmlOutput(checkDialog(issues));
   SpreadsheetApp.getUi().showModalDialog(html.setWidth(720).setHeight(520), "檢查書目");
 }
